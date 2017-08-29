@@ -4,13 +4,12 @@ contract Remittance {
     address owner;
     
     struct WithdrawalStruct {
-        address withdrawer;
-        string password;
+        uint amount;
         uint deadline;
+        address sender;
     }
     
-    mapping(address => uint) balances;
-    mapping(address => WithdrawalStruct) withdrawalInfos;
+    mapping(bytes32 => WithdrawalStruct) withdrawalInfos;
     
     function Remittance() {
         owner = msg.sender;
@@ -22,78 +21,67 @@ contract Remittance {
         selfdestruct(owner);
     }    
     
-    function deposit(address withdrawer, uint deadline, string pw) public payable returns(bool success) {
-        // Don't allow multiple balances
-        if (balances[msg.sender] > 0) revert();
-        
+    function deposit(address withdrawer, bytes32 pw, uint deadline) public payable returns(bool success) {
         // Check for empty withdrawer
         if (withdrawer == 0) revert();
+        
+        // Don't send to self
+        if (withdrawer == msg.sender) revert();
+        
+        bytes32 hash = keccak256(withdrawer, pw);
+        
+        // Don't overwrite if this withdrawer + pw hash exists already
+        if (withdrawalInfos[hash].amount > 0) revert();      
 
         WithdrawalStruct memory withdrawalInfo;
-        withdrawalInfo.withdrawer = withdrawer;
-        withdrawalInfo.password = pw;
         withdrawalInfo.deadline = block.number + deadline;
+        withdrawalInfo.amount = msg.value;
+        withdrawalInfo.sender = msg.sender;
 
-        withdrawalInfos[msg.sender] = withdrawalInfo;
-        balances[msg.sender] += msg.value;
+        withdrawalInfos[hash] = withdrawalInfo;
+
         return true;
     }
     
-    function refund() public returns(bool success) {
-        WithdrawalStruct withdrawalInfo = withdrawalInfos[msg.sender];
+    function refund(address destination, bytes32 pw) public returns(bool success) {
+        bytes32 hash = keccak256(destination, pw);
+        
+        WithdrawalStruct withdrawalInfo = withdrawalInfos[hash];
     
-        if(withdrawalInfo.withdrawer == 0) revert();
-        if(withdrawalInfo.withdrawer != msg.sender) revert();
+        if(withdrawalInfo.amount == 0) revert();
+        if(withdrawalInfo.sender != msg.sender) revert();
 
         // Deadline has not past yet
         if(withdrawalInfo.deadline >= block.number) revert();
         
-        uint balance = balances[msg.sender];
+        uint balance = withdrawalInfo.amount;
 
-        withdrawalInfo.withdrawer.transfer(balance);
-        
-        withdrawalInfos[msg.sender] = emptyWithdrawalInfo();
+        withdrawalInfo.amount = 0;
+        withdrawalInfo.deadline = 0;
+        withdrawalInfos[hash] = withdrawalInfo;
+
+        msg.sender.transfer(balance);
         
         return true;
     }
+
     
-    function emptyWithdrawalInfo() private constant returns(WithdrawalStruct wd) {
-        WithdrawalStruct w;
-        w.withdrawer = 0;
-        w.deadline = 0;
-        w.password = "";
+    function withdraw(bytes32 pw) public returns(bool success) {
+        bytes32 hash = keccak256(msg.sender, pw);
+        WithdrawalStruct withdrawalInfo = withdrawalInfos[hash];
         
-        return w;
-    }
-    
-    function withdraw(address from, string pw) public returns(bool success) {
-        WithdrawalStruct withdrawalInfo = withdrawalInfos[from];
-        
-        if (msg.sender != withdrawalInfo.withdrawer) revert();
-        if (!bytesEqual(bytes(withdrawalInfo.password), bytes(pw))) revert();
         if (withdrawalInfo.deadline < block.number) revert();
 
-        uint balance = balances[from];
-        
-        if (balance > 0) {
-            msg.sender.transfer(balance);
-        }
-        
-        withdrawalInfos[from] = emptyWithdrawalInfo();
-        
-        return true;
-    }
+        uint amount = withdrawalInfo.amount;
 
-    function getBalance() public returns(uint balance) {
-      return balances[msg.sender];
-    }
-    
-    function bytesEqual(bytes a, bytes b) public constant returns(bool equal) {
-        for (uint i = 0; i < a.length; i ++) {
-			if (a[i] != b[i]) {
-				return false;
-			}
+        if (amount > 0) {
+            withdrawalInfo.amount = 0;
+            withdrawalInfo.deadline = 0;
+            withdrawalInfos[hash] = withdrawalInfo;
+
+            msg.sender.transfer(amount);
         }
-		return true;
+
+        return true;
     }
 }
